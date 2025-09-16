@@ -4,8 +4,9 @@
   "description": "Persistent local-disk (and/or memory) adapter for Sails.js / Waterline.",
   "main": "index.js",
   "scripts": {
-    "test": "npm run lint && npm run custom-tests",
+    "test": "npm run lint && npm run custom-tests && npm run transactional-tests",
     "custom-tests": "rm -rf .tmp && node test/runner.js",
+    "transactional-tests": "./node_modules/.bin/mocha test/transactional --recursive",
     "lint": "eslint **/*.js *.js --max-warnings=0"
   },
   "repository": {
@@ -60,7 +61,8 @@
     "features": [
       "cross-adapter",
       "autoIncrement",
-      "unique"
+      "unique",
+      "transactional"
     ]
   }
 }
