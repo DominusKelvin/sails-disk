@@ -56,13 +56,13 @@
       "semantic",
       "queryable",
       "associations",
-      "migratable"
+      "migratable",
+      "transactional"
     ],
     "features": [
       "cross-adapter",
       "autoIncrement",
-      "unique",
-      "transactional"
+      "unique"
     ]
   }
 }

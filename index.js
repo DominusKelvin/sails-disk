@@ -77,9 +77,58 @@ module.exports = (function sailsDisk () {
         throw new Error('Datastore `' + identity + '` is already registered.');
       }
 
+      // Minimal driver object for transaction support
+      var driver = {
+        // Connectable interface (required)
+        createManager: function() {
+          return {
+            manager: {
+              // Mock manager object
+              transactionContext: {
+                id: 'mgr_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9),
+                snapshots: {},
+                isActive: false
+              }
+            },
+            meta: {}
+          };
+        },
+        destroyManager: function(manager, cb) { cb(); },
+        getConnection: function(connection, cb) {
+          return cb(null, { connection: connection.manager, meta: {} });
+        },
+        releaseConnection: function(connection, cb) { cb(); },
+
+        // Queryable interface (required for transactional) - no-ops
+        sendNativeQuery: function(options, cb) { cb(); },
+        compileStatement: function(options, cb) { cb(); },
+        parseNativeQueryResult: function(options, cb) { cb(); },
+        parseNativeQueryError: function(options, cb) { cb(); },
+
+        // Transactional interface
+        beginTransaction: function(options, cb) {
+          var datastoreName = Object.keys(datastores)[0] || 'default';
+          return adapter.beginTransaction(datastoreName, options, cb);
+        },
+
+        commitTransaction: function(options, cb) {
+          var datastoreName = Object.keys(datastores)[0] || 'default';
+          return adapter.commitTransaction(datastoreName, options, cb);
+        },
+
+        rollbackTransaction: function(options, cb) {
+          var datastoreName = Object.keys(datastores)[0] || 'default';
+          return adapter.rollbackTransaction(datastoreName, options, cb);
+        }
+      };
+
       // Create a new datastore dictionary.
+      var manager = driver.createManager().manager;
+      manager.identity = identity;
       var datastore = {
         config: datastoreConfig,
+        manager: manager,
+        driver: driver, // Use the custom driver object
         // We'll add each model's nedb instance to this dictionary.
         dbs: {},
         // We'll keep track of any auto-increment sequences in this dictionary, indexed by table name.
@@ -814,7 +863,191 @@ module.exports = (function sailsDisk () {
 
       return cb();
 
-    }
+    },
+
+    //  ╔╗ ╔═╗╔═╗╦╔╗╔  ┌┬┐┬─┐┌─┐┌┐┌┌─┐┌─┐┌─┐┌┬┐┬┌─┐┌┐┌
+    //  ╠╩╗║╣ ║ ╦║║║║   │ ├┬┘├─┤│││└─┐├─┤│   │ ││ ││││
+    //  ╚═╝╚═╝╚═╝╩╝╚╝   ┴ ┴└─┴ ┴┘└┘└─┘┴ ┴└─┘ ┴ ┴└─┘┘└┘
+    /**
+     * Begin a new database transaction on the provided connection.
+     * @param  {String}       datastoreName The name of the datastore to perform the transaction on.
+     * @param  {Dictionary}   options       Options including connection and meta
+     * @param  {Function}     cb            Callback
+     */
+    beginTransaction: function beginTransaction(datastoreName, options, cb) {
+      // Get a reference to the datastore.
+      var datastore = datastores[datastoreName];
+      if (!datastore) {
+        return cb(new Error('Unrecognized datastore: `'+datastoreName+'`,  It doesn\'t seem to have been registered with this adapter (sails-disk).'));
+      }
+
+      var connection = options.connection;
+      if (!connection || !connection.transactionContext) {
+        return cb(new Error('Invalid connection provided to beginTransaction. Connection must have transactionContext.'));
+      }
+
+      // Take snapshots of all collections for rollback capability
+      var transactionContext = connection.transactionContext;
+      var snapshotTasks = [];
+
+      _.each(datastore.dbs, function(db, tableName) {
+        snapshotTasks.push(function(next) {
+          db.find({}).exec(function(err, docs) {
+            if (err) {
+              return next(err);
+            }
+            transactionContext.snapshots[tableName] = _.cloneDeep(docs || []);
+            return next();
+          });
+        });
+      });
+
+      async.parallel(snapshotTasks, function(err) {
+        if (err) {
+          return cb(err);
+        }
+
+        transactionContext.isActive = true;
+        return cb();
+      });
+    },
+
+    //  ╔═╗╔═╗╔╦╗╔╦╗╦╔╦╗  ┌┬┐┬─┐┌─┐┌┐┌┌─┐┌─┐┌─┐┌┬┐┬┌─┐┌┐┌
+    //  ║  ║ ║║║║║║║║ ║    │ ├┬┘├─┤│││└─┐├─┤│   │ ││ ││││
+    //  ╚═╝╚═╝╩ ╩╩ ╩╩ ╩    ┴ ┴└─┴ ┴┘└┘└─┘┴ ┴└─┘ ┴ ┴└─┘┘└┘
+    /**
+     * Commit the database transaction on the provided connection.
+     * @param  {String}       datastoreName The name of the datastore to perform the transaction on.
+     * @param  {Dictionary}   options       Options including connection and meta
+     * @param  {Function}     cb            Callback
+     */
+    commitTransaction: function commitTransaction(datastoreName, options, cb) {
+      // Get a reference to the datastore.
+      var datastore = datastores[datastoreName];
+      if (!datastore) {
+        return cb(new Error('Unrecognized datastore: `'+datastoreName+'`,  It doesn\'t seem to have been registered with this adapter (sails-disk).'));
+      }
+
+      var connection = options.connection;
+      if (!connection || !connection.transactionContext) {
+        return cb(new Error('Invalid connection provided to commitTransaction. Connection must have transactionContext.'));
+      }
+
+      var transactionContext = connection.transactionContext;
+      transactionContext.isActive = false;
+      // For commit, we just need to mark the transaction as inactive
+      // The changes have already been applied to the database
+      return cb();
+    },
+
+    //  ╦═╗╔═╗╦  ╦  ╔╗ ╔═╗╔═╗╦╔═
+    //  ╠╦╝║ ║║  ║  ╠╩╗╠═╣║  ╠╩╗
+    //  ╩╚═╚═╝╩═╝╩═╝╚═╝╩ ╩╚═╝╩ ╩
+    //  ┌┬┐┬─┐┌─┐┌┐┌┌─┐┌─┐┌─┐┌┬┐┬┌─┐┌┐┌
+    //   │ ├┬┘├─┤│││└─┐├─┤│   │ ││ ││││
+    //   ┴ ┴└─┴ ┴┘└┘└─┘┴ ┴└─┘ ┴ ┴└─┘┘└┘
+    /**
+     * Rollback the database transaction on the provided connection.
+     * @param  {String}       datastoreName The name of the datastore to perform the transaction on.
+     * @param  {Dictionary}   options       Options including connection and meta
+     * @param  {Function}     cb            Callback
+     */
+    rollbackTransaction: function rollbackTransaction(datastoreName, options, cb) {
+      // Get a reference to the datastore.
+      var datastore = datastores[datastoreName];
+      if (!datastore) {
+        return cb(new Error('Unrecognized datastore: `'+datastoreName+'`,  It doesn\'t seem to have been registered with this adapter (sails-disk).'));
+      }
+
+      var connection = options.connection;
+      if (!connection || !connection.transactionContext) {
+        return cb(new Error('Invalid connection provided to rollbackTransaction. Connection must have transactionContext.'));
+      }
+
+      var transactionContext = connection.transactionContext;
+      if (!transactionContext.isActive) {
+        return cb(new Error('Transaction is not active and cannot be rolled back.'));
+      }
+
+      // Rollback: restore original data from snapshots
+      var rollbackTasks = [];
+      _.each(transactionContext.snapshots, function(snapshot, tableName) {
+        var db = datastore.dbs[tableName];
+        if (db) {
+          rollbackTasks.push(function(next) {
+            // Clear current data
+            db.remove({}, { multi: true }, function(removeErr) {
+              if (removeErr) {
+                return next(removeErr);
+              }
+
+              // Restore snapshot data if any exists
+              if (snapshot && snapshot.length > 0) {
+                db.insert(snapshot, function(insertErr) {
+                  if (insertErr) {
+                    return next(insertErr);
+                  }
+                  return next();
+                });
+              } else {
+                return next();
+              }
+            });
+          });
+        }
+      });
+
+      async.parallel(rollbackTasks, function(rollbackErr) {
+        transactionContext.isActive = false;
+        if (rollbackErr) {
+          return cb(new Error('Transaction rollback failed: ' + rollbackErr.message));
+        }
+        return cb();
+      });
+    },
+
+    //  ╦  ╔═╗╔═╗╔═╗╔═╗  ┌─┐┌─┐┌┐┌┌┐┌┌─┐┌─┐┌┬┐┬┌─┐┌┐┌
+    //  ║  ║╣ ╠═╣╚═╗║╣   │  │ │││││││├┤ │   │ ││ ││││
+    //  ╩═╝╚═╝╩ ╩╚═╝╚═╝  └─┘└─┘┘└┘┘└┘└─┘└─┘ ┴ ┴└─┘┘└┘
+    /**
+     * Lease a connection from the datastore for use in a transaction.
+     * @param  {String}       datastoreName The name of the datastore to lease from.
+     * @param  {Dictionary}   meta          Meta options
+     * @param  {Function}     cb            Callback
+     */
+    leaseConnection: function leaseConnection(datastoreName, meta, cb) {
+      // Get a reference to the datastore.
+      var datastore = datastores[datastoreName];
+
+      if (!datastore) {
+        return cb(new Error('Unrecognized datastore: `'+datastoreName+'`,  It doesn\'t seem to have been registered with this adapter (sails-disk).'));
+      }
+
+      var connection = {
+        datastoreName: datastoreName,
+        transactionContext: datastore.manager.transactionContext
+      };
+
+      return cb(undefined, connection);
+    },
+
+    //  ╦═╗╔═╗╦  ╔═╗╔═╗╔═╗╔═╗  ┌─┐┌─┐┌┐┌┌┐┌┌─┐┌─┐┌┬┐┬┌─┐┌┐┌
+    //  ╠╦╝║╣ ║  ║╣ ╠═╣╚═╗║╣   │  │ │││││││├┤ │   │ ││ ││││
+    //  ╩╚═╚═╝╩═╝╚═╝╩ ╩╚═╝╚═╝  └─┘└─┘┘└┘┘└┘└─┘└─┘ ┴ ┴└─┘┘└┘
+    /**
+     * Release a connection back to the datastore.
+     * @param  {Ref}        connection The connection to release
+     * @param  {Function}   cb         Callback
+     */
+    releaseConnection: function releaseConnection(connection, cb) {
+      // For sails-disk, we don't need to do anything special
+      // Just mark the connection as released
+      if (connection && connection.transactionContext) {
+        connection.transactionContext.isActive = false;
+      }
+      return cb();
+    },
+
   };
 
 
@@ -835,4 +1068,3 @@ module.exports = (function sailsDisk () {
   return adapter;
 
 })();
-
