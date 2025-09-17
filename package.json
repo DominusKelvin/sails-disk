@@ -56,8 +56,7 @@
       "semantic",
       "queryable",
       "associations",
-      "migratable",
-      "transactional"
+      "migratable"
     ],
     "features": [
       "cross-adapter",
