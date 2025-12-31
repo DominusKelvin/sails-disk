@@ -1,5 +1,5 @@
+/* global describe, before, after, it */
 var assert = require('assert');
-var _ = require('@sailshq/lodash');
 var Adapter = require('../../');
 
 describe('Transactional ::', function() {
@@ -58,7 +58,7 @@ describe('Transactional ::', function() {
       // Verify connection has transaction context
       assert(connection.transactionContext, 'Connection should have transaction context');
       assert.strictEqual(connection.transactionContext.isActive, false, 'Transaction should not be active initially');
-      
+
       // Begin transaction
       Adapter.beginTransaction(datastoreName, { connection: connection }, function(err) {
         if (err) {
@@ -68,7 +68,7 @@ describe('Transactional ::', function() {
         // Verify transaction is now active
         assert.strictEqual(connection.transactionContext.isActive, true, 'Transaction should be active after begin');
         assert(connection.transactionContext.snapshots, 'Transaction should have snapshots');
-        
+
         return done();
       });
     });

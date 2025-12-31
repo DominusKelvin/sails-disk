@@ -1,5 +1,5 @@
+/* global describe, before, after, it */
 var assert = require('assert');
-var _ = require('@sailshq/lodash');
 var Adapter = require('../../');
 
 describe('Transactional ::', function() {

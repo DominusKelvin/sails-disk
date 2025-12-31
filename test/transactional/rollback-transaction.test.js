@@ -1,3 +1,4 @@
+/* global describe, before, after, it */
 var assert = require('assert');
 var _ = require('@sailshq/lodash');
 var Adapter = require('../../');
@@ -108,7 +109,7 @@ describe('Transactional ::', function() {
                 assert.equal(records.length, 2, 'Should have 2 records during transaction');
                 var existingUser = _.find(records, { id: 'existing-user' });
                 var newUser = _.find(records, { id: 'test-user-rollback' });
-                
+
                 assert(existingUser, 'Existing user should be found');
                 assert(newUser, 'New user should be found');
                 assert.equal(existingUser.name, 'Modified Existing User', 'Existing user should be modified');
